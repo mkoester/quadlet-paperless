@@ -1,0 +1,20 @@
+[Unit]
+Description=Paperless-ngx Apache Tika (office-document text extraction)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=docker.io/apache/tika:latest
+AutoUpdate=registry
+
+Network=paperless.network
+
+# Stateless — no volumes, no published ports (reached in-network as
+# systemd-paperless-tika:9998).
+
+[Service]
+Restart=always
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

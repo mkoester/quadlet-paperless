@@ -1,0 +1,10 @@
+[Unit]
+Description=Paperless-ngx backup (PostgreSQL database + media/data)
+
+[Service]
+Type=oneshot
+# 1. Logical dump of the database
+ExecStart=/bin/sh -c '/usr/bin/podman exec systemd-paperless-db pg_dump -U paperless paperless > /var/backups/paperless/paperless.sql'
+# 2. Documents and app data (not stored in the DB) — mirror to the backup dir
+ExecStart=/usr/bin/rsync -a --delete %h/media/ /var/backups/paperless/media/
+ExecStart=/usr/bin/rsync -a --delete %h/data/ /var/backups/paperless/data/

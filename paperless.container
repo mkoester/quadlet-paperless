@@ -1,0 +1,41 @@
+[Unit]
+Description=Paperless-ngx — document management system
+After=network-online.target paperless-db.service paperless-broker.service paperless-gotenberg.service paperless-tika.service
+Wants=network-online.target paperless-gotenberg.service paperless-tika.service
+# DB and broker are hard requirements; gotenberg/tika are soft (Wants above).
+Requires=paperless-db.service paperless-broker.service
+
+[Container]
+# MIGRATION NOTE: before the first data import, temporarily pin this to your
+# CURRENT (source) Paperless version, restore the DB + media, verify, THEN set it
+# back to :latest and restart so Paperless runs its forward migrations cleanly.
+Image=ghcr.io/paperless-ngx/paperless-ngx:latest
+AutoUpdate=registry
+
+# The paperless user inside the image runs as UID 1000
+# Verify: podman inspect ghcr.io/paperless-ngx/paperless-ngx:latest --format '{{.Config.User}}'
+UserNS=keep-id:uid=1000,gid=1000
+User=1000
+Group=1000
+
+Network=paperless.network
+
+EnvironmentFile=%h/.config/containers/systemd/paperless.env
+EnvironmentFile=%h/.config/containers/systemd/paperless.override.env
+
+# Persistent bind mounts (container paths per upstream compose)
+Volume=%h/data:/usr/src/paperless/data:Z
+Volume=%h/media:/usr/src/paperless/media:Z
+Volume=%h/consume:/usr/src/paperless/consume:Z
+Volume=%h/export:/usr/src/paperless/export:Z
+
+# Bind to localhost only; Caddy terminates TLS in front
+PublishPort=127.0.0.1:8000:8000
+
+[Service]
+Restart=always
+# First start after a large import (index build) can be slow
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target
