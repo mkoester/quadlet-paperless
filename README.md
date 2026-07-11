@@ -77,7 +77,7 @@ sudo -u paperless XDG_RUNTIME_DIR=/run/user/$(id -u paperless) systemctl --user 
 | `PAPERLESS_TIKA_ENABLED` | `1` | Enable Tika/Gotenberg office-doc pipeline |
 | `PAPERLESS_TIKA_GOTENBERG_ENDPOINT` | `http://systemd-paperless-gotenberg:3000` | Gotenberg endpoint |
 | `PAPERLESS_TIKA_ENDPOINT` | `http://systemd-paperless-tika:9998` | Tika endpoint |
-| `PAPERLESS_OCR_LANGUAGE` / `PAPERLESS_OCR_LANGUAGES` | `deu` / `eng` | Primary + extra OCR languages — adjust to your documents |
+| `PAPERLESS_OCR_LANGUAGE` / `PAPERLESS_OCR_LANGUAGES` | `deu+eng` / `deu eng` | Languages *used* for OCR (`+`-joined) / data packs *installed* (space-sep; base image ships only `eng`) — adjust to your documents |
 | `PAPERLESS_TIME_ZONE` | `Europe/Berlin` | Container timezone |
 | `POSTGRES_DB` / `POSTGRES_USER` | `paperless` | DB-container init values |
 
