@@ -1,1 +1,3 @@
 paperless.override.env
+scripts/taxonomy-audit.env
+__pycache__/

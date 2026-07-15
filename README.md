@@ -20,6 +20,8 @@ This project was created with the help of Claude Code and https://github.com/mko
 | `paperless.override.env.template` | Template for local overrides (secrets, URL) |
 | `paperless-backup.service` | Backs up the DB (`pg_dump`) + media/data dirs |
 | `paperless-backup.timer` | Triggers the backup daily |
+| `scripts/taxonomy-audit.py` | Audit tags, document types & correspondents → local-LLM merge/delete suggestions ([below](#taxonomy-audit-tags-document-types--correspondents)) |
+| `scripts/taxonomy-audit.env.template` | Credentials template for the audit script (Paperless + Ollama) |
 
 ## Setup
 
@@ -129,6 +131,146 @@ sudo -u paperless XDG_RUNTIME_DIR=/run/user/$(id -u paperless) systemctl --user 
 sudo -u paperless podman exec systemd-paperless document_index reindex
 sudo -u paperless podman exec systemd-paperless document_thumbnails
 ```
+
+## Taxonomy audit (tags, document types & correspondents)
+
+An overgrown taxonomy (e.g. 800+ tags, 270+ document types, or many redundant correspondents
+on ~1400 docs) is a curation problem, not a search problem — so it needs no RAG, just the flat
+list of items with per-item document counts, which the Paperless-ngx REST API exposes directly
+(`/api/tags/`, `/api/document_types/`, and `/api/correspondents/` each return `document_count`),
+fed once to a local LLM.
+
+`scripts/taxonomy-audit.py` does exactly that — **stdlib only, no pip install**, runnable from
+any host that can reach Paperless and Ollama (it does not touch the containers). For each
+resource it:
+
+1. pulls every item + `document_count` (paginated),
+2. prints stats + **unused** (0 docs) and **low-use** items + local near-duplicate groups
+   (German-aware singular/plural/umlaut folding) — no LLM needed for these,
+3. for **correspondents**, additionally prints **shared-first-word groups** — advisory
+   clusters like `Allianz` / `Allianz Lebensversicherungs-AG` /
+   `Allianz Lebensversicherungs-Aktiengesellschaft` that whole-name folding can't catch (may
+   include genuinely distinct entities, so review before merging),
+4. asks an Ollama model for **merge groups**, **delete candidates**, and **keep** notes.
+
+The LLM prompts deliberately reuse the **conventions** from the `paperless-ai-next` tagging
+system prompt so the cleanup targets the same shape the tagger produces and the taxonomy stays
+stable instead of the long tail regrowing: shortest-form **sender** correspondents (never the
+recipient/account holder; no generic-category or bare-person entries), **singular** thematic
+tags with no names/numbers/dates, and a fixed set of broad **document-type** base classes (no
+English, no `…schreiben` compounds, no slash-combined names). This is a two-way loop — a
+recurring merge/delete here signals a gap to fold back into the tagger prompt. Only the
+conventions are shared, not that prompt's per-document JSON schema / date rules; keep the
+`RESOURCES` hints in `taxonomy-audit.py` aligned when the tagger prompt changes (last synced
+with `paperless-ai-next` README commit *Harden paperless-ai prompt*).
+
+By default it is **read-only** (analysis) — it only prints suggestions.
+
+```sh
+cp scripts/taxonomy-audit.env.template scripts/taxonomy-audit.env   # fill in Paperless + Ollama creds
+scripts/taxonomy-audit.py                            # analyse all three resources (read-only)
+scripts/taxonomy-audit.py --resource correspondents  # one resource only
+scripts/taxonomy-audit.py --no-llm                   # local analysis only (no Ollama call/creds)
+scripts/taxonomy-audit.py --self-test
+```
+
+### Applying merges (`--apply`)
+
+`--apply` turns the suggestions into action. It asks the model for a machine-readable
+merge/delete plan, **prints the full resolved plan first** (numbered `M1`, `M2`, `D1`, …),
+and only then walks you through it **one change at a time** (`y`/`N`/`q`):
+
+- **Merge** — reassigns every document from the redundant items onto a canonical one via
+  `POST /api/documents/bulk_edit/` (`set_correspondent` / `set_document_type` / `modify_tags`),
+  then **deletes each emptied duplicate only after re-checking its `document_count` is 0**
+  (never deletes an item that still has documents). The canonical is used as-is when it's an
+  **existing** item (small tags fold into a big one, e.g. `Bankgebühren → Bank`); if it's a new
+  name, the surviving item is renamed to it.
+- **Delete** — removes a genuinely redundant item (its documents keep all other metadata).
+
+Always preview first with `--dry-run` — it resolves and prints the exact actions (which items
+merge into which, how many docs move) **without any writes**:
+
+```sh
+scripts/taxonomy-audit.py --resource correspondents --apply --dry-run   # preview, no changes
+scripts/taxonomy-audit.py --resource correspondents --apply             # interactive, WRITES
+```
+
+Merges/deletes are irreversible, so start with one resource, keep a fresh DB backup
+(`paperless-backup.service`), and lean on `--dry-run` before the real run. Merging is
+reassign-then-delete because Paperless-ngx has no native object-merge endpoint.
+
+#### Editable plans (`--plan` / `--apply-plan`)
+
+For a messy taxonomy — especially **document types**, where a 12B model's free-form grouping
+is often semantically off (`Bestellung` folded into `Brief`, `Payslip` into `Zeugnis`) —
+correct the plan by hand before anything is written:
+
+```sh
+scripts/taxonomy-audit.py --resource document-types --plan   # → document-types_20260713_143022.plan
+P=document-types_20260713_143022.plan
+# edit $P: delete a bad group, drop a type from a group, move a line, retarget a MERGE
+scripts/taxonomy-audit.py --apply-plan $P --dry-run  # preview (resource read from the file)
+scripts/taxonomy-audit.py --apply-plan $P            # apply
+```
+
+`--plan` takes an **optional** filename: bare `--plan` writes `<resource>_<YYYYmmdd_HHMMSS>.plan`
+for each selected resource (so `--plan` with no `--resource` generates all three — each
+independently, so one model failure doesn't affect the others — and successive runs don't
+clobber), and it **prompts before overwriting**. Pass an explicit name (`--plan dt.plan`) only
+with a single `--resource`.
+
+The plan file is a simple commented text format (`MERGE <survivor>` with indented member types,
+`DELETE <name>`; `#` comments, blank lines ignored) — no YAML dependency. It carries a
+`# resource: <key>` marker, so **`--apply-plan` needs no `--resource`** (pass one only to
+override). Since the file is already curated, **`--apply-plan` confirms once ("Proceed?") and
+then applies the whole plan** — it re-resolves against the live taxonomy first (unknown names
+are reported and skipped) and prints the full plan; use `--dry-run` to preview without writing.
+(`--apply`, the uncurated model-plan path, still confirms each action unless `--yes`.)
+`--apply / --plan / --apply-plan` are mutually exclusive.
+
+Two knobs reduce model sloppiness up front: the plan prompt is **conservative** (only merge
+same-kind types; keep `Rechnung`/`Abrechnung`, `Vertrag`/`Versicherungsschein`, `Antrag`/`Formular`
+separate) and runs at a low **`OLLAMA_TEMPERATURE`** (default 0.2). For a big cleanup, a larger
+model (27B+) for the plan step groups noticeably better than 12B.
+
+Credentials live in `scripts/taxonomy-audit.env` (gitignored; real env vars override it):
+`PAPERLESS_URL` + `PAPERLESS_TOKEN` (Paperless → Settings → create token) and
+`OLLAMA_HOST` + `OLLAMA_MODEL`. Optional `OLLAMA_NUM_CTX` (default 16384; each taxonomy goes in
+one prompt, so raise it for very large sets — more VRAM), `OLLAMA_TEMPERATURE` (default 0.2),
+and `SINGLETON_THRESHOLD` (default 2).
+The script hits the GPU box's native `/api/generate`, so `num_ctx` **is** honored here (unlike
+the OpenAI-compatible endpoint the `paperless-ai-next` tagging model uses). The
+`gemma4-paperless` model referenced in the template is defined in `quadlet-paperless-ai-next`.
+
+Run `scripts/taxonomy-audit.py --help` for the full flag/env reference.
+
+### Troubleshooting
+
+- **`--verbose`** logs every request's **full URL**, HTTP status, and result `count` to
+  stderr — the quickest way to see what the API is actually returning. All error messages
+  now include the fully resolved URL too.
+- **`PAPERLESS_URL` with a trailing `/api`** (the old paperless-ai format) is auto-stripped,
+  so `https://host` and `https://host/api/` both resolve to `…/api/tags/` (not `…/api/api/…`).
+- **`No <items> returned` despite having many:** the request reached Paperless (HTTP 200) but
+  saw zero objects — almost always a **token-permissions** issue. Paperless tokens are
+  per-user and the API only returns objects that user owns or may view; use a **superuser**
+  token. (A wrong URL or token fails outright with a 4xx/connection error instead.)
+- **`empty response (done_reason='length')`:** the prompt filled the whole context window, so
+  the model had no room to generate. Large taxonomies (e.g. 900+ German tags, which tokenize
+  densely) are now **auto-chunked** for plan generation — the tail is split into context-fitting
+  batches, each including the high-count "anchor" items as merge targets, and the per-chunk
+  plans are combined. If a single chunk still overflows, raise `OLLAMA_NUM_CTX` (VRAM
+  permitting). A truly empty reply with `done_reason='load'` instead means the model failed to
+  load / ran out of VRAM — check `ollama ps` and the Ollama logs, or lower `OLLAMA_NUM_CTX`.
+- **Ollama `Connection timed out`** is a **network** problem, not auth — nothing answered at
+  `OLLAMA_HOST` from where the script runs. A bad token would return an HTTP error instead. A
+  link-local/private address (e.g. `169.254.x.x`) that works for the server-side
+  `paperless-ai-next` container often does **not** route from a workstation — use the GPU
+  box's LAN address or run the script on the server. If your Ollama sits behind an auth proxy,
+  set `OLLAMA_API_KEY` (sent as a bearer token; native Ollama ignores it).
+- Behind Caddy, Paperless emits paginated `next` links as `http://`; the script rewrites each
+  page back onto `PAPERLESS_URL`'s scheme/host so pagination stays authenticated over HTTPS.
 
 ## Reverse proxy (Caddy)
 
