@@ -1,6 +1,6 @@
 # quadlet-paperless
 
-Quadlet setup for [Paperless-ngx](https://docs.paperless-ngx.com/) — self-hosted document management with OCR (`ghcr.io/paperless-ngx/paperless-ngx:latest`). Full stack: app + PostgreSQL + Redis + Gotenberg + Tika (office-document conversion & text extraction).
+Quadlet setup for [Paperless-ngx](https://docs.paperless-ngx.com/) — self-hosted document management with OCR (`ghcr.io/paperless-ngx/paperless-ngx:3.1`, pinned). Full stack: app + PostgreSQL + Redis + Gotenberg + Tika (office-document conversion & text extraction).
 
 This project was created with the help of Claude Code and https://github.com/mkoester/quadlet-my-guidelines/blob/main/new_quadlet_with_ai_assistance.md.
 
@@ -90,41 +90,44 @@ sudo -u paperless XDG_RUNTIME_DIR=/run/user/$(id -u paperless) systemctl --user 
 
 ## Migration (from an older install)
 
-Strategy: **logical DB dump + media/data copy**, version-pinned to avoid schema breakage. Because a logical `pg_dump`/`pg_restore` is used, the target PostgreSQL major (18 here) need **not** match the source — only the Paperless **app** version must match during the restore.
+> **A logical DB dump does NOT work here.** The source install (`mknas1`) runs **MariaDB**; this stack runs PostgreSQL, and `pg_dump`/`pg_restore` cannot cross engines. This section prescribed exactly that until it was corrected — use Paperless's own **`document_exporter` / `document_importer`**, which is engine-agnostic.
+
+Strategy: **`document_exporter` on the source → `document_importer` here**, version-pinned so the app version matches on both sides. The target PostgreSQL major (18) is irrelevant to this route; only the Paperless **app** version must match during the import.
 
 ```sh
-# --- On the source host: capture facts + dump ---
+# --- On the source host ---
 # Current Paperless version → the tag to pin below
 podman inspect <old-app> --format '{{index .Config.Labels "org.opencontainers.image.version"}}'
-# Quiesce the source (stop the app so no writes race the dump), then:
-podman exec <old-db> pg_dump -U <user> -Fc <db> > /tmp/paperless.dump
+# Quiesce the source (stop the consumer so nothing races the export), then:
+podman exec <old-app> document_exporter ../export --delete --split-manifest
 ```
 
 ```sh
 # --- On the new host, as the paperless user ---
 # 1. Pin the app image to the SOURCE version in paperless.container:
 #      Image=ghcr.io/paperless-ngx/paperless-ngx:2.20.15
-# 2. Copy documents/data into the bind mounts
-rsync -a <source>:<old-media>/ ~paperless/media/
-rsync -a <source>:<old-data>/  ~paperless/data/
-sudo -u paperless podman unshare chown -R 1000:1000 ~paperless/{media,data}
+#    (registry tags carry no leading 'v')
+# 2. Copy the export bundle into the bind mount
+rsync -a <source>:<old-export>/ ~paperless/export/
+sudo -u paperless podman unshare chown -R 1000:1000 ~paperless/export
 
-# 3. Start ONLY the database, create schema-less DB, restore the dump
-sudo -u paperless XDG_RUNTIME_DIR=/run/user/$(id -u paperless) systemctl --user start paperless-db
-sudo -u paperless podman exec -i systemd-paperless-db \
-  pg_restore -U paperless -d paperless --clean --if-exists < /tmp/paperless.dump
-
-# 4. Start the rest, verify against the pinned version
+# 3. Start the stack on the pinned version (empty DB — do NOT set
+#    PAPERLESS_ADMIN_USER; the export carries the users), then import
 sudo -u paperless XDG_RUNTIME_DIR=/run/user/$(id -u paperless) systemctl --user start paperless
+sudo -u paperless podman exec systemd-paperless document_importer ../export
 
-# 5. Upgrade: set Image back to :latest in paperless.container, then
+# 4. Verify against the pinned version: document count, a search, a thumbnail.
+
+# 5. Upgrade: raise Image to the current 3.x tag in paperless.container, then
 sudo -u paperless XDG_RUNTIME_DIR=/run/user/$(id -u paperless) systemctl --user daemon-reload
 sudo -u paperless XDG_RUNTIME_DIR=/run/user/$(id -u paperless) systemctl --user restart paperless
-# Paperless applies forward DB migrations automatically on startup. If search or
-# thumbnails look off after the jump, rebuild them:
-sudo -u paperless podman exec systemd-paperless document_index reindex
+# Paperless applies forward DB migrations automatically on startup, and 3.x
+# rebuilds the (now Tantivy) search index by itself — the first start is slow.
+# Thumbnails, if they look off after the jump:
 sudo -u paperless podman exec systemd-paperless document_thumbnails
 ```
+
+**Coming from a 2.x source, read [`docs/migration-v3.md`](https://github.com/paperless-ngx/paperless-ngx/blob/main/docs/migration-v3.md) first** — v3 can only be entered from **2.20.15**, `PAPERLESS_DBENGINE` became required (set in `paperless.env`), `PAPERLESS_SECRET_KEY` became required, `PAPERLESS_OCR_MODE=skip` was removed, and `PAPERLESS_CONSUMER_POLLING` was renamed to `PAPERLESS_CONSUMER_POLLING_INTERVAL`.
 
 ## Taxonomy audit (tags, document types & correspondents)
 
@@ -212,7 +215,7 @@ Add a DNS A/CNAME record for `paperless.my_domain.tld` pointing to your server.
 The containers assume: app **1000**, postgres **999**, redis **999**. Verify before starting (and re-chown the matching bind dir if a value differs):
 
 ```sh
-podman inspect ghcr.io/paperless-ngx/paperless-ngx:latest --format '{{.Config.User}}'
+podman inspect ghcr.io/paperless-ngx/paperless-ngx:3.1 --format '{{.Config.User}}'
 podman inspect docker.io/library/postgres:18 --format '{{.Config.User}}'
 podman inspect docker.io/library/redis:8 --format '{{.Config.User}}'
 # e.g. if postgres differs: sudo -u paperless podman unshare chown -R <uid>:<gid> ~paperless/db

@@ -4,7 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Container]
-Image=docker.io/gotenberg/gotenberg:8.25
+Image=docker.io/gotenberg/gotenberg:8.34
 AutoUpdate=registry
 
 # Hardening flags taken verbatim from the upstream Paperless-ngx compose.
