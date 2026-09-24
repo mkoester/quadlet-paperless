@@ -12,13 +12,13 @@ Requires=paperless-db.service paperless-broker.service
 #
 # Pinned to the MINOR SERIES rather than :latest — 3.0.0 shipped nine breaking
 # changes, and AutoUpdate=registry on :latest would have applied them unattended.
-# A series tag still picks up patch releases (3.1 == 3.1.1 today) but can never
+# A series tag still picks up patch releases (3.2 == 3.2.1 today) but can never
 # cross a minor on its own. Registry tags carry NO leading 'v'.
-Image=ghcr.io/paperless-ngx/paperless-ngx:3.1
+Image=ghcr.io/paperless-ngx/paperless-ngx:3.2
 AutoUpdate=registry
 
 # The paperless user inside the image runs as UID 1000
-# Verify: podman inspect ghcr.io/paperless-ngx/paperless-ngx:3.1 --format '{{.Config.User}}'
+# Verify: podman inspect ghcr.io/paperless-ngx/paperless-ngx:3.2 --format '{{.Config.User}}'
 UserNS=keep-id:uid=1000,gid=1000
 User=1000
 Group=1000

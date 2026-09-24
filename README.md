@@ -1,6 +1,6 @@
 # quadlet-paperless
 
-Quadlet setup for [Paperless-ngx](https://docs.paperless-ngx.com/) — self-hosted document management with OCR (`ghcr.io/paperless-ngx/paperless-ngx:3.1`, pinned). Full stack: app + PostgreSQL + Redis + Gotenberg + Tika (office-document conversion & text extraction).
+Quadlet setup for [Paperless-ngx](https://docs.paperless-ngx.com/) — self-hosted document management with OCR (`ghcr.io/paperless-ngx/paperless-ngx:3.2`, pinned). Full stack: app + PostgreSQL + Redis + Gotenberg + Tika (office-document conversion & text extraction).
 
 This project was created with the help of Claude Code and https://github.com/mkoester/quadlet-my-guidelines/blob/main/new_quadlet_with_ai_assistance.md.
 
@@ -215,7 +215,7 @@ Add a DNS A/CNAME record for `paperless.my_domain.tld` pointing to your server.
 The containers assume: app **1000**, postgres **999**, redis **999**. Verify before starting (and re-chown the matching bind dir if a value differs):
 
 ```sh
-podman inspect ghcr.io/paperless-ngx/paperless-ngx:3.1 --format '{{.Config.User}}'
+podman inspect ghcr.io/paperless-ngx/paperless-ngx:3.2 --format '{{.Config.User}}'
 podman inspect docker.io/library/postgres:18 --format '{{.Config.User}}'
 podman inspect docker.io/library/redis:8 --format '{{.Config.User}}'
 # e.g. if postgres differs: sudo -u paperless podman unshare chown -R <uid>:<gid> ~paperless/db
