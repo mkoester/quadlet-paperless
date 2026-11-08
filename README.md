@@ -232,6 +232,7 @@ Gotenberg and Tika are stateless (no bind mounts), so their UID does not need ma
 sudo mkdir -p /var/backups/paperless
 sudo chown paperless:backup-readers /var/backups/paperless
 sudo chmod 2750 /var/backups/paperless
+sudo setfacl -R -m g:backup-readers:rX,d:g:backup-readers:rX /var/backups/paperless
 
 # 2. Symlink the backup service and timer from the repo
 sudo -u paperless mkdir -p ~paperless/.config/systemd/user
